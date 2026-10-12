@@ -20,22 +20,38 @@ processors:
       - context: span
         statements:
           # --- Operation type (drives Agents view rendering) ---
-          # Root span of each graph.invoke() = one turn.
+          # Root span = one turn; every AGENT span (incl. delegated sub-agents) is its own invoke_agent.
           - set(attributes["gen_ai.operation.name"], "invoke_agent") where parent_span_id == SpanID(0x0000000000000000)
+          - set(attributes["gen_ai.operation.name"], "invoke_agent") where attributes["openinference.span.kind"] == "AGENT"
           - set(attributes["gen_ai.operation.name"], "chat") where attributes["openinference.span.kind"] == "LLM"
           - set(attributes["gen_ai.operation.name"], "execute_tool") where attributes["openinference.span.kind"] == "TOOL"
+          # RETRIEVER has no GenAI equivalent: alias to a datastore tool call (span name = tool name).
+          - set(attributes["gen_ai.operation.name"], "execute_tool") where attributes["openinference.span.kind"] == "RETRIEVER"
+          - set(attributes["gen_ai.tool.type"], "function") where attributes["openinference.span.kind"] == "TOOL"
+          - set(attributes["gen_ai.tool.type"], "datastore") where attributes["openinference.span.kind"] == "RETRIEVER"
+          - set(attributes["gen_ai.tool.name"], name) where attributes["openinference.span.kind"] == "RETRIEVER" and attributes["tool.name"] == nil
 
           # --- Grouping ---
           - set(attributes["gen_ai.conversation.id"], attributes["session.id"]) where attributes["session.id"] != nil
           - set(attributes["gen_ai.agent.name"], attributes["agent.name"]) where attributes["agent.name"] != nil
+          # LangGraph OI puts the agent name inside the `metadata` JSON string (needs a contrib build
+          # that supports indexing converter results, v0.100+).
+          - set(attributes["gen_ai.agent.name"], ParseJSON(attributes["metadata"])["agent.name"]) where attributes["gen_ai.agent.name"] == nil and attributes["openinference.span.kind"] == "AGENT" and attributes["metadata"] != nil
           - set(attributes["gen_ai.agent.name"], "${env:AGENT_NAME}") where attributes["gen_ai.agent.name"] == nil and parent_span_id == SpanID(0x0000000000000000)
+          - set(attributes["gen_ai.agent.name"], name) where attributes["gen_ai.agent.name"] == nil and attributes["openinference.span.kind"] == "AGENT"
 
           # --- Enrichment (optional) ---
           - set(attributes["gen_ai.request.model"], attributes["llm.model_name"]) where attributes["llm.model_name"] != nil
           - set(attributes["gen_ai.provider.name"], attributes["llm.provider"]) where attributes["llm.provider"] != nil
+          - set(attributes["gen_ai.provider.name"], attributes["llm.system"]) where attributes["gen_ai.provider.name"] == nil and attributes["llm.system"] != nil
           - set(attributes["gen_ai.usage.input_tokens"], attributes["llm.token_count.prompt"]) where attributes["llm.token_count.prompt"] != nil
           - set(attributes["gen_ai.usage.output_tokens"], attributes["llm.token_count.completion"]) where attributes["llm.token_count.completion"] != nil
+          - set(attributes["gen_ai.request.temperature"], ParseJSON(attributes["llm.invocation_parameters"])["temperature"]) where attributes["llm.invocation_parameters"] != nil
+          - set(attributes["gen_ai.request.max_tokens"], ParseJSON(attributes["llm.invocation_parameters"])["max_tokens"]) where attributes["llm.invocation_parameters"] != nil
           - set(attributes["gen_ai.tool.name"], attributes["tool.name"]) where attributes["tool.name"] != nil
+          - set(attributes["gen_ai.tool.description"], attributes["tool.description"]) where attributes["tool.description"] != nil
+          # e.g. "UpstreamTimeoutError: core-banking ... timed out" -> "UpstreamTimeoutError"
+          - set(attributes["error.type"], Split(status.message, ":")[0]) where status.code == STATUS_CODE_ERROR and status.message != ""
 
 exporters:
   # Inspect transformed spans locally before trusting the output.
